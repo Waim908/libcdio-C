@@ -1,8 +1,6 @@
 name: Static libraries, clang
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
     inputs:
       commit:
@@ -16,7 +14,7 @@ permissions:
 jobs:
   build-static:
     name: ${{ matrix.arch }} static .a
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     defaults:
       run:
@@ -26,16 +24,10 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            host: x86_64-linux-gnu
-            target: ""
-            sysroot: ""
-            extra_packages: ""
+            runner: ubuntu-24.04
             expected: x86-64
           - arch: aarch64
-            host: aarch64-linux-gnu
-            target: aarch64-linux-gnu
-            sysroot: /usr/aarch64-linux-gnu
-            extra_packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            runner: ubuntu-24.04-arm
             expected: ARM aarch64
 
     steps:
@@ -48,14 +40,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             autoconf automake libtool pkg-config \
-            clang llvm lld \
-            ${{ matrix.extra_packages }}
+            clang llvm lld
 
       - name: Build static libraries
         env:
-          TARGET: ${{ matrix.target }}
-          SYSROOT: ${{ matrix.sysroot }}
-          HOST: ${{ matrix.host }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -63,21 +51,9 @@ jobs:
           export CFLAGS="-O2 -pipe -fno-ident -ffunction-sections -fdata-sections"
           export CXXFLAGS="$CFLAGS"
 
-          if [ -n "$TARGET" ]; then
-            crtbegin="$(find "/usr/lib/gcc-cross/$TARGET" -name crtbegin.o -print -quit 2>/dev/null || true)"
-            if [ -n "$crtbegin" ]; then
-              gcc_args="--gcc-install-dir=$(dirname "$crtbegin")"
-            else
-              gcc_args="--gcc-toolchain=/usr"
-            fi
-            export CC="clang --target=$TARGET --sysroot=$SYSROOT $gcc_args"
-            export CXX="clang++ --target=$TARGET --sysroot=$SYSROOT $gcc_args"
-            export LDFLAGS="-s -fuse-ld=lld"
-          else
-            export CC=clang
-            export CXX=clang++
-            export LDFLAGS="-s"
-          fi
+          export CC=clang
+          export CXX=clang++
+          export LDFLAGS="-s -fuse-ld=lld"
 
           export AR=llvm-ar
           export RANLIB=llvm-ranlib
@@ -91,8 +67,6 @@ jobs:
           cd "$build_dir"
 
           "$GITHUB_WORKSPACE/configure" \
-            --build=x86_64-linux-gnu \
-            --host="$HOST" \
             --prefix=/usr \
             --enable-static \
             --disable-shared \
