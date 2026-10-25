@@ -1,0 +1,157 @@
+name: Static libraries, clang
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-static:
+    name: ${{ matrix.arch }} static .a
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            host: x86_64-linux-gnu
+            target: ""
+            sysroot: ""
+            extra_packages: ""
+            expected: x86-64
+          - arch: aarch64
+            host: aarch64-linux-gnu
+            target: aarch64-linux-gnu
+            sysroot: /usr/aarch64-linux-gnu
+            extra_packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            expected: ARM aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake libtool pkg-config \
+            clang llvm lld \
+            ${{ matrix.extra_packages }}
+
+      - name: Build static libraries
+        env:
+          TARGET: ${{ matrix.target }}
+          SYSROOT: ${{ matrix.sysroot }}
+          HOST: ${{ matrix.host }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$TARGET" ]; then
+            export CC="clang --target=$TARGET --sysroot=$SYSROOT"
+            export CXX="clang++ --target=$TARGET --sysroot=$SYSROOT"
+            export LDFLAGS="-fuse-ld=lld"
+          else
+            export CC=clang
+            export CXX=clang++
+            export LDFLAGS=""
+          fi
+
+          export AR=llvm-ar
+          export RANLIB=llvm-ranlib
+          export NM=llvm-nm
+          export STRIP=llvm-strip
+
+          autoreconf -f -i
+
+          build_dir="$PWD/build/$ARCH"
+          mkdir -p "$build_dir"
+          cd "$build_dir"
+
+          "$GITHUB_WORKSPACE/configure" \
+            --build=x86_64-linux-gnu \
+            --host="$HOST" \
+            --prefix=/usr \
+            --enable-static \
+            --disable-shared \
+            --without-versioned-libs \
+            --disable-cxx \
+            --disable-example-progs \
+            --disable-cddb \
+            --without-cdda-player \
+            --without-cd-drive \
+            --without-cd-info \
+            --without-cd-read \
+            --without-iso-info \
+            --without-iso-read
+
+          make -C include -j"$(nproc)"
+          make -C lib -j"$(nproc)"
+
+          stage="$PWD/stage"
+          make -C include install DESTDIR="$stage"
+          make -C lib install DESTDIR="$stage"
+          make install-pkgconfigDATA DESTDIR="$stage"
+
+          find "$stage" -name '*.a' -print
+
+      - name: Verify static archives
+        env:
+          EXPECTED: ${{ matrix.expected }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+
+          stage="$PWD/build/$ARCH/stage"
+
+          shared="$(find "$stage" \( -name '*.so' -o -name '*.so.*' \) -print)"
+          if [ -n "$shared" ]; then
+            echo "Shared libraries were produced despite --disable-shared:"
+            echo "$shared"
+            exit 1
+          fi
+
+          mapfile -t archives < <(find "$stage/usr" -name '*.a' -print | sort)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "No static archives were produced"
+            exit 1
+          fi
+
+          for archive in "${archives[@]}"; do
+            member="$(llvm-ar t "$archive" | head -n 1)"
+            llvm-ar p "$archive" "$member" > /tmp/check.o
+            file_output="$(file -b /tmp/check.o)"
+            echo "$archive: $file_output"
+            if ! grep -Fq "$EXPECTED" <<< "$file_output"; then
+              echo "Expected architecture '$EXPECTED' in $archive"
+              exit 1
+            fi
+          done
+
+      - name: Package artifacts
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+
+          stage="$PWD/build/$ARCH/stage"
+          (
+            cd "$stage"
+            find usr -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+
+          name="libcdio-static-clang-$ARCH"
+          tar -C "$stage" -czf "$name.tar.gz" usr SHA256SUMS
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libcdio-static-clang-${{ matrix.arch }}
+          path: libcdio-static-clang-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
