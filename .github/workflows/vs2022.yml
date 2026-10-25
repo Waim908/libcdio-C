@@ -1,6 +1,6 @@
 name: Windows, VS2022
 
-on: [push, pull_request]
+on: [pull_request]
 
 env:
   SOLUTION_FILE_PATH: ./libcdio.sln
