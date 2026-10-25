@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      commit:
+        description: Commit hash or ref to build
+        required: false
+        default: ee2f9e380e346d7a9c46ad71105353940101992a
 
 permissions:
   contents: read
@@ -35,6 +40,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.commit || github.sha }}
 
       - name: Install dependencies
         run: |
@@ -53,6 +60,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          export CFLAGS="-O2 -pipe -fno-ident -ffunction-sections -fdata-sections"
+          export CXXFLAGS="$CFLAGS"
+
           if [ -n "$TARGET" ]; then
             crtbegin="$(find "/usr/lib/gcc-cross/$TARGET" -name crtbegin.o -print -quit 2>/dev/null || true)"
             if [ -n "$crtbegin" ]; then
@@ -62,11 +72,11 @@ jobs:
             fi
             export CC="clang --target=$TARGET --sysroot=$SYSROOT $gcc_args"
             export CXX="clang++ --target=$TARGET --sysroot=$SYSROOT $gcc_args"
-            export LDFLAGS="-fuse-ld=lld"
+            export LDFLAGS="-s -fuse-ld=lld"
           else
             export CC=clang
             export CXX=clang++
-            export LDFLAGS=""
+            export LDFLAGS="-s"
           fi
 
           export AR=llvm-ar
@@ -106,6 +116,19 @@ jobs:
           make install-pkgconfigDATA DESTDIR="$stage"
 
           find "$stage" -name '*.a' -print
+
+      - name: Strip static archives
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+
+          stage="$PWD/build/$ARCH/stage"
+          while IFS= read -r -d '' archive; do
+            echo "Stripping $archive"
+            llvm-strip --strip-unneeded "$archive"
+            llvm-ranlib "$archive"
+          done < <(find "$stage" -name '*.a' -print0)
 
       - name: Show configure log
         if: failure()
