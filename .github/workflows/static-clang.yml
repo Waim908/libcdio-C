@@ -54,8 +54,14 @@ jobs:
           set -euo pipefail
 
           if [ -n "$TARGET" ]; then
-            export CC="clang --target=$TARGET --sysroot=$SYSROOT"
-            export CXX="clang++ --target=$TARGET --sysroot=$SYSROOT"
+            crtbegin="$(find "/usr/lib/gcc-cross/$TARGET" -name crtbegin.o -print -quit 2>/dev/null || true)"
+            if [ -n "$crtbegin" ]; then
+              gcc_args="--gcc-install-dir=$(dirname "$crtbegin")"
+            else
+              gcc_args="--gcc-toolchain=/usr"
+            fi
+            export CC="clang --target=$TARGET --sysroot=$SYSROOT $gcc_args"
+            export CXX="clang++ --target=$TARGET --sysroot=$SYSROOT $gcc_args"
             export LDFLAGS="-fuse-ld=lld"
           else
             export CC=clang
@@ -100,6 +106,11 @@ jobs:
           make install-pkgconfigDATA DESTDIR="$stage"
 
           find "$stage" -name '*.a' -print
+
+      - name: Show configure log
+        if: failure()
+        run: |
+          find build -name config.log -print -exec sed -n '1,260p' {} \; 2>/dev/null || true
 
       - name: Verify static archives
         env:
